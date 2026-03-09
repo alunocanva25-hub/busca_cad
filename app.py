@@ -6,18 +6,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
-
-try:
-    import gdown
-except ImportError:
-    gdown = None
 
 # =========================================================
 # CONFIG INICIAL
 # =========================================================
-
-load_dotenv()
 
 st.set_page_config(
     page_title="Buscar Cadastro",
@@ -25,8 +17,29 @@ st.set_page_config(
     layout="wide"
 )
 
-DEFAULT_XLSX_PATH = os.getenv("XLSX_PATH", "dados.xlsx")
-DEFAULT_DRIVE_FILE_ID = os.getenv("DRIVE_FILE_ID", "")
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+try:
+    import gdown
+except Exception:
+    gdown = None
+
+
+def get_secret_or_env(name, default=""):
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+
+DEFAULT_XLSX_PATH = get_secret_or_env("XLSX_PATH", "dados.xlsx")
+DEFAULT_DRIVE_FILE_ID = get_secret_or_env("DRIVE_FILE_ID", "")
 
 USUARIOS = {
     "admin": "123",
@@ -35,6 +48,68 @@ USUARIOS = {
     "usuario3": "123",
     "usuario4": "123",
 }
+
+# =========================================================
+# CSS
+# =========================================================
+
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 1.2rem;
+    padding-bottom: 1rem;
+}
+
+.login-wrap {
+    max-width: 460px;
+    margin: 5vh auto 0 auto;
+}
+
+.login-box {
+    background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+
+.login-title {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+.login-subtitle {
+    color: #cbd5e1;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.small-note {
+    color: #94a3b8;
+    font-size: 0.9rem;
+    text-align: center;
+    margin-top: 12px;
+}
+
+div[data-testid="stTextInput"] input {
+    border-radius: 10px;
+}
+
+div[data-testid="stButton"] button {
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.result-box {
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(59,130,246,0.08);
+    border: 1px solid rgba(59,130,246,0.15);
+}
+</style>
+""", unsafe_allow_html=True)
 
 # =========================================================
 # UTILITÁRIOS
@@ -61,14 +136,9 @@ def safe_str_contains(series, termo):
     serie_norm = series.fillna("").astype(str).map(normalizar_texto)
     return serie_norm.str.contains(re.escape(termo_norm), na=False)
 
-def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=10):
-    """
-    Tenta achar automaticamente a linha do cabeçalho.
-    Dá prioridade para linhas que contenham algo parecido com:
-    NOTA / DATA / ELETRICISTA / NOME
-    """
+def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
     bruto = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=None, nrows=max_linhas)
-    melhor_idx = 2  # fallback: linha 3 da planilha => índice 2
+    melhor_idx = 2
     melhor_score = -1
 
     chaves_nota = ["NOTA", "NF", "NUMERO_NOTA", "N_NOTA"]
@@ -96,13 +166,11 @@ def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=10):
 def localizar_coluna(df, candidatos):
     mapa = {slug_coluna(c): c for c in df.columns}
 
-    # match exato
     for cand in candidatos:
         cand_slug = slug_coluna(cand)
         if cand_slug in mapa:
             return mapa[cand_slug]
 
-    # match parcial
     for slug, original in mapa.items():
         for cand in candidatos:
             cand_slug = slug_coluna(cand)
@@ -112,10 +180,8 @@ def localizar_coluna(df, candidatos):
     return None
 
 def limpar_dataframe(df):
-    # remove colunas totalmente vazias
     df = df.dropna(axis=1, how="all").copy()
 
-    # renomear colunas vazias/unnamed se necessário
     novas_cols = []
     for i, col in enumerate(df.columns):
         col_str = str(col).strip()
@@ -124,9 +190,7 @@ def limpar_dataframe(df):
         novas_cols.append(col_str)
     df.columns = novas_cols
 
-    # remove linhas totalmente vazias
     df = df.dropna(axis=0, how="all").copy()
-
     return df
 
 def preparar_dataframe(path_xlsx, sheet_name):
@@ -144,7 +208,6 @@ def preparar_dataframe(path_xlsx, sheet_name):
         "ELETRICISTA", "NOME", "NOME DO ELETRICISTA", "PRESTADOR", "COLABORADOR", "NOME COMPLETO"
     ])
 
-    # Se vier uma primeira linha repetindo o cabeçalho, remove
     if len(df) > 0:
         primeira = [normalizar_texto(x) for x in df.iloc[0].tolist()]
         cab = [normalizar_texto(x) for x in df.columns.tolist()]
@@ -158,10 +221,7 @@ def preparar_dataframe(path_xlsx, sheet_name):
         df[col_nome] = df[col_nome].astype(str).str.strip()
 
     if col_data:
-        try:
-            df[col_data] = pd.to_datetime(df[col_data], errors="coerce")
-        except Exception:
-            pass
+        df[col_data] = pd.to_datetime(df[col_data], errors="coerce")
 
     return df, col_nota, col_data, col_nome, header_idx
 
@@ -173,7 +233,7 @@ def baixar_do_drive(file_id, destino):
     if not file_id:
         return False, "DRIVE_FILE_ID não informado."
     if gdown is None:
-        return False, "Biblioteca gdown não instalada. Instale com: pip install gdown"
+        return False, "Biblioteca gdown não instalada. Adicione gdown no requirements.txt."
 
     url = f"https://drive.google.com/uc?id={file_id}"
     try:
@@ -187,7 +247,7 @@ def validar_xlsx(path_xlsx):
     if not p.exists():
         return False, "Arquivo não encontrado."
     if p.suffix.lower() not in [".xlsx", ".xlsm", ".xls"]:
-        return False, "O arquivo informado não parece ser um Excel válido."
+        return False, "Arquivo inválido. Informe um Excel."
     return True, "OK"
 
 def df_para_excel_bytes(df):
@@ -217,27 +277,41 @@ if "usar_drive" not in st.session_state:
     st.session_state.usar_drive = False
 
 # =========================================================
+# CACHE
+# =========================================================
+
+@st.cache_data(show_spinner=False)
+def carregar_abas_cache(path_xlsx):
+    return listar_abas(path_xlsx)
+
+@st.cache_data(show_spinner=False)
+def carregar_df_cache(path_xlsx, sheet_name):
+    return preparar_dataframe(path_xlsx, sheet_name)
+
+# =========================================================
 # LOGIN
 # =========================================================
 
 def tela_login():
-    st.title("🔐 Buscar Cadastro")
-    st.write("Faça login para acessar o sistema.")
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="login-box">', unsafe_allow_html=True)
+    st.markdown('<div class="login-title">🔐 Buscar Cadastro</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-subtitle">Entre com seu usuário e senha para acessar o sistema.</div>', unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns([1, 1.2, 1])
+    usuario = st.text_input("Usuário", key="login_usuario")
+    senha = st.text_input("Senha", type="password", key="login_senha")
 
-    with c2:
-        usuario = st.text_input("Usuário")
-        senha = st.text_input("Senha", type="password")
+    if st.button("Entrar", use_container_width=True):
+        if usuario in USUARIOS and USUARIOS[usuario] == senha:
+            st.session_state.logado = True
+            st.session_state.usuario_logado = usuario
+            st.rerun()
+        else:
+            st.error("Usuário ou senha inválidos.")
 
-        if st.button("Entrar", use_container_width=True):
-            if usuario in USUARIOS and USUARIOS[usuario] == senha:
-                st.session_state.logado = True
-                st.session_state.usuario_logado = usuario
-                st.success("Login realizado com sucesso.")
-                st.rerun()
-            else:
-                st.error("Usuário ou senha inválidos.")
+    st.markdown('<div class="small-note">Acesso inicial do sistema</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================================================
 # SIDEBAR / CONFIGURAÇÕES
@@ -257,13 +331,13 @@ def painel_configuracoes():
             xlsx_path = st.text_input(
                 "Caminho do XLSX",
                 value=st.session_state.xlsx_path,
-                help="Pode deixar o padrão, por exemplo: dados.xlsx"
+                help="Deixe padrão se quiser usar o mesmo arquivo local do app."
             )
 
             drive_file_id = st.text_input(
                 "Drive File ID",
                 value=st.session_state.drive_file_id,
-                help="Preencha somente se quiser baixar o arquivo do Google Drive"
+                help="Use se quiser baixar a planilha direto do Google Drive."
             )
 
             col_a, col_b = st.columns(2)
@@ -281,16 +355,15 @@ def painel_configuracoes():
                     st.session_state.usar_drive = False
                     st.session_state.xlsx_path = DEFAULT_XLSX_PATH
                     st.session_state.drive_file_id = DEFAULT_DRIVE_FILE_ID
-                    st.success("Configuração padrão restaurada.")
+                    st.success("Padrão restaurado.")
                     st.rerun()
 
-            if st.button("Baixar/agualizar do Drive", use_container_width=True):
+            if st.button("Baixar/atualizar do Drive", use_container_width=True):
                 destino = st.session_state.xlsx_path
-                ok, msg = baixar_do_drive(
-                    st.session_state.drive_file_id,
-                    destino
-                )
+                ok, msg = baixar_do_drive(st.session_state.drive_file_id, destino)
                 if ok:
+                    carregar_abas_cache.clear()
+                    carregar_df_cache.clear()
                     st.success(msg)
                 else:
                     st.error(msg)
@@ -311,14 +384,6 @@ def painel_configuracoes():
 # APP PRINCIPAL
 # =========================================================
 
-@st.cache_data(show_spinner=False)
-def carregar_abas_cache(path_xlsx):
-    return listar_abas(path_xlsx)
-
-@st.cache_data(show_spinner=False)
-def carregar_df_cache(path_xlsx, sheet_name):
-    return preparar_dataframe(path_xlsx, sheet_name)
-
 def app():
     painel_configuracoes()
 
@@ -328,6 +393,7 @@ def app():
     ok, msg = validar_xlsx(caminho)
     if not ok:
         st.error(f"Não foi possível abrir o XLSX. Motivo: {msg}")
+        st.info("No Streamlit Cloud, use o painel lateral para informar o caminho padrão ou baixar do Google Drive.")
         st.stop()
 
     try:
@@ -342,30 +408,23 @@ def app():
 
     abas_opcoes = abas + ["TODOS"]
 
-    col_top1, col_top2 = st.columns([1.2, 2.2])
+    top1, top2 = st.columns([1.1, 2.2])
 
-    with col_top1:
-        aba_escolhida = st.selectbox(
-            "Selecione a aba",
-            abas_opcoes,
-            index=0
-        )
+    with top1:
+        aba_escolhida = st.selectbox("Selecione a aba", abas_opcoes)
 
-    with col_top2:
-        st.info("O seletor identifica automaticamente as abas existentes na planilha.")
+    with top2:
+        st.info("O seletor mostra automaticamente as abas existentes na planilha.")
 
     if aba_escolhida == "TODOS":
         dfs = []
-        mapa_info = []
-
         for aba in abas:
             try:
-                df_tmp, col_nota_tmp, col_data_tmp, col_nome_tmp, header_idx_tmp = carregar_df_cache(caminho, aba)
+                df_tmp, _, _, _, _ = carregar_df_cache(caminho, aba)
                 if len(df_tmp) > 0:
                     df_tmp = df_tmp.copy()
                     df_tmp["ABA_ORIGEM"] = aba
                     dfs.append(df_tmp)
-                    mapa_info.append((aba, col_nota_tmp, col_data_tmp, col_nome_tmp, header_idx_tmp))
             except Exception:
                 continue
 
@@ -375,7 +434,6 @@ def app():
 
         df = pd.concat(dfs, ignore_index=True)
 
-        # detecta colunas principais no consolidado
         col_nota = localizar_coluna(df, ["NOTA", "NF", "NUMERO DA NOTA", "NUMERO NOTA", "N DA NOTA", "N_NOTA"])
         col_data = localizar_coluna(df, ["DATA", "DATA DA NOTA", "DT", "EMISSAO", "DATA EMISSAO"])
         col_nome = localizar_coluna(df, ["ELETRICISTA", "NOME", "NOME DO ELETRICISTA", "PRESTADOR", "COLABORADOR", "NOME COMPLETO"])
@@ -387,33 +445,26 @@ def app():
             st.error(f"Erro ao carregar a aba '{aba_escolhida}': {e}")
             st.stop()
 
-    info_cols = st.columns(4)
-    info_cols[0].metric("Linhas carregadas", len(df))
-    info_cols[1].metric("Cabeçalho detectado", str(header_idx + 1) if isinstance(header_idx, int) else str(header_idx))
-    info_cols[2].metric("Coluna Nota", col_nota if col_nota else "não identificada")
-    info_cols[3].metric("Coluna Nome", col_nome if col_nome else "não identificada")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Linhas carregadas", len(df))
+    m2.metric("Cabeçalho detectado", str(header_idx + 1) if isinstance(header_idx, int) else str(header_idx))
+    m3.metric("Coluna Nota", col_nota if col_nota else "não identificada")
+    m4.metric("Coluna Nome", col_nome if col_nome else "não identificada")
 
     if not col_nome:
-        st.warning(
-            "Não consegui identificar automaticamente a coluna do eletricista/nome. "
-            "Confira os cabeçalhos da planilha."
-        )
-
+        st.warning("Não consegui identificar automaticamente a coluna do nome/eletricista.")
     if not col_nota:
-        st.warning(
-            "Não consegui identificar automaticamente a coluna da nota. "
-            "Confira os cabeçalhos da planilha."
-        )
+        st.warning("Não consegui identificar automaticamente a coluna da nota.")
 
     st.divider()
 
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with col1:
+    with c1:
         busca_nome = st.text_input("Digite o nome do eletricista")
         busca_exata = st.checkbox("Busca exata do nome", value=False)
 
-    with col2:
+    with c2:
         busca_nota = st.text_input("Digite o número da nota")
 
     usar_data = st.checkbox("Filtrar por data", value=False)
@@ -423,15 +474,16 @@ def app():
 
     st.divider()
 
-    st.subheader("Busca em massa")
-    lista_notas = st.text_area(
-        "Cole vários números de nota (1 por linha)",
-        height=140
+    st.subheader("Busca em massa por nomes")
+    lista_nomes = st.text_area(
+        "Cole vários nomes de eletricistas (1 por linha)",
+        height=160,
+        help="Exemplo: um nome por linha. O sistema vai buscar todos de uma vez."
     )
 
-    col_btn1, col_btn2 = st.columns([1, 1])
-    pesquisar = col_btn1.button("🔎 Pesquisar", use_container_width=True)
-    limpar = col_btn2.button("Limpar filtros", use_container_width=True)
+    b1, b2 = st.columns(2)
+    pesquisar = b1.button("🔎 Pesquisar", use_container_width=True)
+    limpar = b2.button("Limpar filtros", use_container_width=True)
 
     if limpar:
         st.rerun()
@@ -439,43 +491,31 @@ def app():
     resultado = df.copy()
 
     if pesquisar:
-        # filtro por nome
         if busca_nome and col_nome:
             serie_nome = resultado[col_nome].fillna("").astype(str)
 
             if busca_exata:
                 nome_ref = normalizar_texto(busca_nome)
-                resultado = resultado[
-                    serie_nome.map(normalizar_texto) == nome_ref
-                ]
+                resultado = resultado[serie_nome.map(normalizar_texto) == nome_ref]
             else:
-                resultado = resultado[
-                    safe_str_contains(serie_nome, busca_nome)
-                ]
+                resultado = resultado[safe_str_contains(serie_nome, busca_nome)]
 
-        # filtro por nota
         if busca_nota and col_nota:
             serie_nota = resultado[col_nota].fillna("").astype(str).str.strip()
             nota_ref = str(busca_nota).strip()
-            resultado = resultado[
-                serie_nota.str.contains(re.escape(nota_ref), na=False)
-            ]
+            resultado = resultado[serie_nota.str.contains(re.escape(nota_ref), na=False)]
 
-        # filtro por data
         if usar_data and busca_data and col_data:
             serie_data = pd.to_datetime(resultado[col_data], errors="coerce")
             resultado = resultado[serie_data.dt.date == busca_data]
 
-        # busca em massa
-        if lista_notas.strip() and col_nota:
-            notas = [
-                linha.strip()
-                for linha in lista_notas.splitlines()
-                if linha.strip()
-            ]
-            notas_set = set(notas)
-            serie_nota = resultado[col_nota].fillna("").astype(str).str.strip()
-            resultado = resultado[serie_nota.isin(notas_set)]
+        # BUSCA EM MASSA POR NOMES
+        if lista_nomes.strip() and col_nome:
+            nomes = [linha.strip() for linha in lista_nomes.splitlines() if linha.strip()]
+            nomes_normalizados = {normalizar_texto(nome) for nome in nomes}
+
+            serie_nome_norm = resultado[col_nome].fillna("").astype(str).map(normalizar_texto)
+            resultado = resultado[serie_nome_norm.isin(nomes_normalizados)]
 
     st.divider()
 
@@ -484,6 +524,9 @@ def app():
             st.warning("Nenhum registro encontrado.")
         else:
             st.success(f"{len(resultado)} registro(s) encontrado(s).")
+
+            with st.container():
+                st.markdown('<div class="result-box">Resultado da pesquisa carregado com sucesso.</div>', unsafe_allow_html=True)
 
             st.dataframe(resultado, use_container_width=True, height=420)
 
@@ -498,7 +541,6 @@ def app():
 
     with st.expander("📄 Visualizar base completa", expanded=False):
         st.dataframe(df, use_container_width=True, height=350)
-
         st.caption("Colunas encontradas na base:")
         st.write(list(df.columns))
 
