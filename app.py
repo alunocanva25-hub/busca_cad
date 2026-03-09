@@ -4,9 +4,13 @@ import re
 import json
 import unicodedata
 from pathlib import Path
+from copy import deepcopy
 
 import pandas as pd
 import streamlit as st
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 
 # =========================================================
 # CONFIG INICIAL
@@ -19,6 +23,7 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+USERS_FILE = BASE_DIR / "users.json"
 
 try:
     from dotenv import load_dotenv
@@ -41,44 +46,133 @@ def get_secret_or_env(name, default=""):
     return os.getenv(name, default)
 
 
-DEFAULT_XLSX_PATH = get_secret_or_env("XLSX_PATH", "dados.xlsx")
+DEFAULT_XLSX_PATH = get_secret_or_env("XLSX_PATH", "BUSCAR_CAD.xlsx")
 DEFAULT_DRIVE_FILE_ID = get_secret_or_env("DRIVE_FILE_ID", "")
 
 # =========================================================
 # LOGIN / USUÁRIOS
 # =========================================================
 
-def carregar_usuarios():
+def carregar_usuarios_base():
+    """
+    Base inicial:
+    - tenta st.secrets[USUARIOS]
+    - tenta st.secrets[USUARIOS_JSON]
+    - tenta env USUARIOS_JSON
+    - fallback padrão
+
+    Formato interno:
+    {
+      "admin": {"senha": "123", "perfil": "total"},
+      "usuario1": {"senha": "123", "perfil": "consulta"}
+    }
+    """
     padrao = {
-        "admin": "123",
-        "usuario1": "123",
-        "usuario2": "123",
-        "usuario3": "123",
-        "usuario4": "123",
+        "admin": {"senha": "123", "perfil": "total"},
+        "usuario1": {"senha": "123", "perfil": "consulta"},
+        "usuario2": {"senha": "123", "perfil": "consulta"},
+        "usuario3": {"senha": "123", "perfil": "consulta"},
+        "usuario4": {"senha": "123", "perfil": "consulta"},
     }
 
+    # st.secrets["USUARIOS"] pode vir como dict simples ou dict aninhado
     try:
         if "USUARIOS" in st.secrets:
-            usuarios_secret = st.secrets["USUARIOS"]
-            if isinstance(usuarios_secret, dict):
-                return dict(usuarios_secret)
+            raw = dict(st.secrets["USUARIOS"])
+            normalizado = {}
+            for user, valor in raw.items():
+                if isinstance(valor, dict):
+                    senha = str(valor.get("senha", "123"))
+                    perfil = str(valor.get("perfil", "consulta")).strip().lower()
+                else:
+                    senha = str(valor)
+                    perfil = "consulta" if user.lower() != "admin" else "total"
+                normalizado[str(user)] = {
+                    "senha": senha,
+                    "perfil": "total" if perfil == "total" else "consulta"
+                }
+            if "admin" not in normalizado:
+                normalizado["admin"] = {"senha": "123", "perfil": "total"}
+            return normalizado
     except Exception:
         pass
 
     try:
         if "USUARIOS_JSON" in st.secrets:
-            return json.loads(st.secrets["USUARIOS_JSON"])
+            raw = json.loads(st.secrets["USUARIOS_JSON"])
+            normalizado = {}
+            for user, valor in raw.items():
+                if isinstance(valor, dict):
+                    senha = str(valor.get("senha", "123"))
+                    perfil = str(valor.get("perfil", "consulta")).strip().lower()
+                else:
+                    senha = str(valor)
+                    perfil = "consulta" if str(user).lower() != "admin" else "total"
+                normalizado[str(user)] = {
+                    "senha": senha,
+                    "perfil": "total" if perfil == "total" else "consulta"
+                }
+            if "admin" not in normalizado:
+                normalizado["admin"] = {"senha": "123", "perfil": "total"}
+            return normalizado
     except Exception:
         pass
 
     try:
-        usuarios_json = os.getenv("USUARIOS_JSON", "")
-        if usuarios_json.strip():
-            return json.loads(usuarios_json)
+        usuarios_json = os.getenv("USUARIOS_JSON", "").strip()
+        if usuarios_json:
+            raw = json.loads(usuarios_json)
+            normalizado = {}
+            for user, valor in raw.items():
+                if isinstance(valor, dict):
+                    senha = str(valor.get("senha", "123"))
+                    perfil = str(valor.get("perfil", "consulta")).strip().lower()
+                else:
+                    senha = str(valor)
+                    perfil = "consulta" if str(user).lower() != "admin" else "total"
+                normalizado[str(user)] = {
+                    "senha": senha,
+                    "perfil": "total" if perfil == "total" else "consulta"
+                }
+            if "admin" not in normalizado:
+                normalizado["admin"] = {"senha": "123", "perfil": "total"}
+            return normalizado
     except Exception:
         pass
 
     return padrao
+
+
+def carregar_usuarios():
+    base = carregar_usuarios_base()
+
+    # users.json sobrescreve/expande a base
+    if USERS_FILE.exists():
+        try:
+            extra = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+            if isinstance(extra, dict):
+                for user, valor in extra.items():
+                    if isinstance(valor, dict):
+                        senha = str(valor.get("senha", "123"))
+                        perfil = str(valor.get("perfil", "consulta")).strip().lower()
+                        base[str(user)] = {
+                            "senha": senha,
+                            "perfil": "total" if perfil == "total" else "consulta"
+                        }
+        except Exception:
+            pass
+
+    if "admin" not in base:
+        base["admin"] = {"senha": "123", "perfil": "total"}
+
+    return base
+
+
+def salvar_usuarios(usuarios_dict):
+    USERS_FILE.write_text(
+        json.dumps(usuarios_dict, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
 
 USUARIOS = carregar_usuarios()
@@ -93,12 +187,10 @@ st.markdown("""
     padding-top: 1.2rem;
     padding-bottom: 1rem;
 }
-
 .login-wrap {
     max-width: 460px;
     margin: 5vh auto 0 auto;
 }
-
 .login-box {
     background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
     border: 1px solid rgba(255,255,255,0.08);
@@ -106,36 +198,30 @@ st.markdown("""
     padding: 28px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.25);
 }
-
 .login-title {
     font-size: 28px;
     font-weight: 700;
     margin-bottom: 6px;
     text-align: center;
 }
-
 .login-subtitle {
     color: #cbd5e1;
     margin-bottom: 20px;
     text-align: center;
 }
-
 .small-note {
     color: #94a3b8;
     font-size: 0.9rem;
     text-align: center;
     margin-top: 12px;
 }
-
 div[data-testid="stTextInput"] input {
     border-radius: 10px;
 }
-
 div[data-testid="stButton"] button {
     border-radius: 10px;
     font-weight: 600;
 }
-
 .result-box {
     padding: 12px;
     border-radius: 12px;
@@ -207,10 +293,8 @@ def safe_str_contains(series, termo):
 
 def resolver_caminho_xlsx(path_xlsx):
     p = Path(str(path_xlsx).strip())
-
     if not p.is_absolute():
         p = BASE_DIR / p
-
     return p.resolve()
 
 
@@ -226,7 +310,6 @@ def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
     for idx in range(len(bruto)):
         linha = [slug_coluna(v) for v in bruto.iloc[idx].tolist()]
         score = 0
-
         for c in linha:
             if any(k in c for k in chaves_nota):
                 score += 3
@@ -234,7 +317,6 @@ def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
                 score += 2
             if any(k in c for k in chaves_nome):
                 score += 4
-
         if score > melhor_score:
             melhor_score = score
             melhor_idx = idx
@@ -344,10 +426,59 @@ def montar_resultado_padrao(df):
     return resultado
 
 
-def df_para_excel_bytes(df):
+def df_para_excel_bytes_formatado(df):
     output = io.BytesIO()
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="resultado")
+        ws = writer.book["resultado"]
+
+        # Estilo do cabeçalho parecido com a imagem
+        fill_azul = PatternFill("solid", fgColor="9DC3E6")
+        fill_verde = PatternFill("solid", fgColor="C6E0B4")
+        fonte = Font(bold=True, color="000000")
+        borda = Border(
+            left=Side(style="thin", color="808080"),
+            right=Side(style="thin", color="808080"),
+            top=Side(style="thin", color="808080"),
+            bottom=Side(style="thin", color="808080")
+        )
+
+        alinhamento = Alignment(horizontal="center", vertical="center")
+
+        for idx, cell in enumerate(ws[1], start=1):
+            cell.font = fonte
+            cell.border = borda
+            cell.alignment = alinhamento
+
+            if idx >= 8:
+                cell.fill = fill_verde
+            else:
+                cell.fill = fill_azul
+
+        # Bordas nas células
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.border = borda
+
+        # Filtro automático
+        ws.auto_filter.ref = ws.dimensions
+
+        # Congelar cabeçalho
+        ws.freeze_panes = "A2"
+
+        # Altura da linha do cabeçalho
+        ws.row_dimensions[1].height = 22
+
+        # Largura automática
+        for col_idx, col_name in enumerate(df.columns, start=1):
+            max_len = len(str(col_name))
+            for value in df.iloc[:, col_idx - 1].astype(str).head(1000):
+                if len(value) > max_len:
+                    max_len = len(value)
+            largura = min(max(max_len + 2, 12), 35)
+            ws.column_dimensions[get_column_letter(col_idx)].width = largura
+
     output.seek(0)
     return output.getvalue()
 
@@ -361,14 +492,23 @@ def gerar_texto_notas(df):
 
 
 def desempacotar_carregamento(retorno):
-    if isinstance(retorno, tuple):
-        if len(retorno) >= 2:
-            return retorno[0], retorno[1]
+    if isinstance(retorno, tuple) and len(retorno) >= 2:
+        return retorno[0], retorno[1]
     raise ValueError("Retorno inesperado ao carregar a planilha.")
 
 
 def usuario_e_admin():
     return str(st.session_state.get("usuario_logado", "")).strip().lower() == "admin"
+
+
+def perfil_usuario_logado():
+    usuario = str(st.session_state.get("usuario_logado", "")).strip()
+    dados = USUARIOS.get(usuario, {})
+    return str(dados.get("perfil", "consulta")).strip().lower()
+
+
+def usuario_pode_configurar():
+    return perfil_usuario_logado() == "total"
 
 # =========================================================
 # ESTADO
@@ -419,7 +559,7 @@ def tela_login():
 
     if entrar:
         usuario_ok = usuario in USUARIOS
-        senha_ok = usuario_ok and str(USUARIOS[usuario]) == str(senha)
+        senha_ok = usuario_ok and str(USUARIOS[usuario]["senha"]) == str(senha)
 
         if usuario_ok and senha_ok:
             st.session_state.logado = True
@@ -433,24 +573,122 @@ def tela_login():
     st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================================================
+# GESTÃO DE USUÁRIOS
+# =========================================================
+
+def painel_usuarios_admin():
+    global USUARIOS
+
+    if not usuario_e_admin():
+        return
+
+    with st.sidebar:
+        with st.expander("👥 Usuários", expanded=False):
+            st.caption("Somente o admin pode criar e gerenciar usuários.")
+
+            with st.form("form_novo_usuario", clear_on_submit=True):
+                novo_usuario = st.text_input("Novo usuário")
+                nova_senha = st.text_input("Senha do novo usuário", type="password")
+                novo_perfil = st.selectbox("Perfil", ["consulta", "total"])
+                criar_usuario = st.form_submit_button("Criar usuário", use_container_width=True)
+
+            if criar_usuario:
+                u = novo_usuario.strip()
+                s = nova_senha.strip()
+                p = novo_perfil.strip().lower()
+
+                if not u:
+                    st.error("Informe o nome do usuário.")
+                elif not re.match(r"^[A-Za-z0-9_.-]+$", u):
+                    st.error("Usuário inválido. Use apenas letras, números, _, . ou -")
+                elif not s:
+                    st.error("Informe a senha.")
+                elif u in USUARIOS:
+                    st.error("Este usuário já existe.")
+                else:
+                    USUARIOS[u] = {"senha": s, "perfil": "total" if p == "total" else "consulta"}
+                    try:
+                        salvar_usuarios(USUARIOS)
+                        st.success(f"Usuário '{u}' criado com sucesso.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Não foi possível salvar o usuário: {e}")
+
+            usuarios_exibicao = []
+            for user, dados in USUARIOS.items():
+                usuarios_exibicao.append({
+                    "USUÁRIO": user,
+                    "PERFIL": dados.get("perfil", "consulta")
+                })
+
+            if usuarios_exibicao:
+                st.dataframe(pd.DataFrame(usuarios_exibicao), use_container_width=True, height=220)
+
+            st.caption("Alteração rápida de perfil/senha")
+            usuarios_editaveis = [u for u in USUARIOS.keys()]
+
+            if usuarios_editaveis:
+                with st.form("form_editar_usuario", clear_on_submit=True):
+                    usuario_alvo = st.selectbox("Selecionar usuário", usuarios_editaveis)
+                    nova_senha_edit = st.text_input("Nova senha (deixe em branco para manter)", type="password")
+                    novo_perfil_edit = st.selectbox("Novo perfil", ["consulta", "total"])
+                    salvar_edicao = st.form_submit_button("Salvar alterações", use_container_width=True)
+
+                if salvar_edicao:
+                    try:
+                        if usuario_alvo not in USUARIOS:
+                            st.error("Usuário não encontrado.")
+                        else:
+                            if nova_senha_edit.strip():
+                                USUARIOS[usuario_alvo]["senha"] = nova_senha_edit.strip()
+                            USUARIOS[usuario_alvo]["perfil"] = "total" if novo_perfil_edit == "total" else "consulta"
+
+                            # garante admin como total
+                            if usuario_alvo.lower() == "admin":
+                                USUARIOS[usuario_alvo]["perfil"] = "total"
+
+                            salvar_usuarios(USUARIOS)
+                            st.success("Usuário atualizado com sucesso.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao atualizar usuário: {e}")
+
+                with st.form("form_excluir_usuario", clear_on_submit=True):
+                    usuarios_para_excluir = [u for u in usuarios_editaveis if u.lower() != "admin"]
+                    if usuarios_para_excluir:
+                        usuario_excluir = st.selectbox("Excluir usuário", usuarios_para_excluir)
+                        excluir = st.form_submit_button("Excluir usuário", use_container_width=True)
+                        if excluir:
+                            try:
+                                USUARIOS.pop(usuario_excluir, None)
+                                salvar_usuarios(USUARIOS)
+                                st.success(f"Usuário '{usuario_excluir}' removido.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro ao excluir usuário: {e}")
+                    else:
+                        st.info("Não há usuários removíveis no momento.")
+
+# =========================================================
 # SIDEBAR / CONFIGURAÇÕES
 # =========================================================
 
 def painel_configuracoes():
-    admin = usuario_e_admin()
+    pode_configurar = usuario_pode_configurar()
 
     with st.sidebar:
         st.markdown("## ⚙️ Configurações")
         st.write(f"Usuário logado: **{st.session_state.usuario_logado}**")
+        st.write(f"Perfil: **{perfil_usuario_logado()}**")
 
-        if admin:
-            st.success("Perfil: administrador")
+        if pode_configurar:
+            st.success("Acesso total")
         else:
-            st.info("Perfil: consulta")
-            st.caption("Somente o usuário admin pode alterar as configurações.")
+            st.info("Acesso consulta")
+            st.caption("Somente usuários com perfil total podem alterar as configurações.")
 
         with st.expander("Arquivo XLSX", expanded=False):
-            if admin:
+            if pode_configurar:
                 usar_drive = st.checkbox(
                     "Baixar do Google Drive",
                     value=st.session_state.usar_drive
@@ -459,7 +697,7 @@ def painel_configuracoes():
                 xlsx_path = st.text_input(
                     "Caminho do XLSX",
                     value=st.session_state.xlsx_path,
-                    help="Ex.: dados.xlsx ou subpasta/dados.xlsx"
+                    help="Ex.: BUSCAR_CAD.xlsx ou subpasta/BUSCAR_CAD.xlsx"
                 )
 
                 drive_file_id = st.text_input(
@@ -496,21 +734,9 @@ def painel_configuracoes():
                     else:
                         st.error(msg)
             else:
-                st.text_input(
-                    "Caminho do XLSX",
-                    value=st.session_state.xlsx_path,
-                    disabled=True
-                )
-                st.text_input(
-                    "Drive File ID",
-                    value=st.session_state.drive_file_id,
-                    disabled=True
-                )
-                st.checkbox(
-                    "Baixar do Google Drive",
-                    value=st.session_state.usar_drive,
-                    disabled=True
-                )
+                st.text_input("Caminho do XLSX", value=st.session_state.xlsx_path, disabled=True)
+                st.text_input("Drive File ID", value=st.session_state.drive_file_id, disabled=True)
+                st.checkbox("Baixar do Google Drive", value=st.session_state.usar_drive, disabled=True)
                 st.warning("Configurações bloqueadas para este usuário.")
 
         ok, msg = validar_xlsx(st.session_state.xlsx_path)
@@ -525,7 +751,7 @@ def painel_configuracoes():
             st.write("Caminho configurado:", st.session_state.xlsx_path)
             st.write("Caminho resolvido:", str(resolver_caminho_xlsx(st.session_state.xlsx_path)))
 
-        if admin:
+        if pode_configurar:
             if st.button("Limpar cache", use_container_width=True):
                 carregar_abas_cache.clear()
                 carregar_df_cache.clear()
@@ -544,6 +770,7 @@ def painel_configuracoes():
 
 def app():
     painel_configuracoes()
+    painel_usuarios_admin()
 
     st.title("🔎 Buscar Cadastro de Eletricista")
 
@@ -577,7 +804,6 @@ def app():
 
     if aba_escolhida == "TODOS":
         dfs = []
-        header_idx = "múltiplas abas"
         for aba in abas:
             try:
                 retorno = carregar_df_cache(caminho, aba)
@@ -595,10 +821,10 @@ def app():
     else:
         try:
             retorno = carregar_df_cache(caminho, aba_escolhida)
-            df_bruto, header_idx = desempacotar_carregamento(retorno)
+            df_bruto, _ = desempacotar_carregamento(retorno)
         except Exception as e:
             st.error(f"Erro ao carregar a aba '{aba_escolhida}': {e}")
-            st.info("Se você acabou de trocar a versão do app, clique em 'Limpar cache' na lateral e tente novamente.")
+            st.info("Se você acabou de trocar a versão do app, clique em 'Limpar cache' e tente novamente.")
             st.stop()
 
     df = montar_resultado_padrao(df_bruto)
@@ -677,7 +903,7 @@ def app():
             col_btn1, col_btn2 = st.columns(2)
 
             with col_btn1:
-                excel_bytes = df_para_excel_bytes(resultado[COLUNAS_PADRAO])
+                excel_bytes = df_para_excel_bytes_formatado(resultado[COLUNAS_PADRAO])
                 st.download_button(
                     "⬇️ Baixar resultado em Excel",
                     data=excel_bytes,
