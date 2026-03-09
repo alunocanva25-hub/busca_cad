@@ -112,6 +112,38 @@ div[data-testid="stButton"] button {
 """, unsafe_allow_html=True)
 
 # =========================================================
+# COLUNAS PADRÃO DO RESULTADO / EXPORT
+# =========================================================
+
+COLUNAS_PADRAO = [
+    "EMPRESA",
+    "REGIONAL",
+    "BASE",
+    "NOME",
+    "NOTA AM",
+    "ID SAP",
+    "DEPOSITO",
+    "PN",
+    "DESCRIÇÃO",
+    "ATENDIDO POR",
+    "DATA DA BAIXA",
+]
+
+MAPA_CAMPOS = {
+    "EMPRESA": ["EMPRESA"],
+    "REGIONAL": ["REGIONAL"],
+    "BASE": ["BASE"],
+    "NOME": ["NOME", "ELETRICISTA", "NOME DO ELETRICISTA", "NOME COMPLETO", "PRESTADOR", "COLABORADOR"],
+    "NOTA AM": ["NOTA AM", "NOTA", "NF", "NUMERO DA NOTA", "NUMERO NOTA", "N DA NOTA", "N_NOTA"],
+    "ID SAP": ["ID SAP", "IDSAP", "SAP", "ID_SAP"],
+    "DEPOSITO": ["DEPOSITO", "DEPÓSITO"],
+    "PN": ["PN"],
+    "DESCRIÇÃO": ["DESCRICAO", "DESCRIÇÃO", "DESC", "DESCRICAO MATERIAL"],
+    "ATENDIDO POR": ["ATENDIDO POR", "ATENDIDO_POR"],
+    "DATA DA BAIXA": ["DATA DA BAIXA", "DT BAIXA", "DATA BAIXA", "BAIXA", "DATA"],
+}
+
+# =========================================================
 # UTILITÁRIOS
 # =========================================================
 
@@ -141,8 +173,8 @@ def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
     melhor_idx = 2
     melhor_score = -1
 
-    chaves_nota = ["NOTA", "NF", "NUMERO_NOTA", "N_NOTA"]
-    chaves_data = ["DATA", "DT", "DATA_NOTA"]
+    chaves_nota = ["NOTA", "NF", "NUMERO_NOTA", "N_NOTA", "NOTA_AM"]
+    chaves_data = ["DATA", "DT", "DATA_BAIXA"]
     chaves_nome = ["ELETRICISTA", "NOME", "NOME_ELETRICISTA", "PRESTADOR", "COLABORADOR"]
 
     for idx in range(len(bruto)):
@@ -153,7 +185,7 @@ def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
             if any(k in c for k in chaves_nota):
                 score += 3
             if any(k in c for k in chaves_data):
-                score += 3
+                score += 2
             if any(k in c for k in chaves_nome):
                 score += 4
 
@@ -198,32 +230,13 @@ def preparar_dataframe(path_xlsx, sheet_name):
     df = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=header_idx)
     df = limpar_dataframe(df)
 
-    col_nota = localizar_coluna(df, [
-        "NOTA", "NF", "NUMERO DA NOTA", "NUMERO NOTA", "N DA NOTA", "N_NOTA"
-    ])
-    col_data = localizar_coluna(df, [
-        "DATA", "DATA DA NOTA", "DT", "EMISSAO", "DATA EMISSAO"
-    ])
-    col_nome = localizar_coluna(df, [
-        "ELETRICISTA", "NOME", "NOME DO ELETRICISTA", "PRESTADOR", "COLABORADOR", "NOME COMPLETO"
-    ])
-
     if len(df) > 0:
         primeira = [normalizar_texto(x) for x in df.iloc[0].tolist()]
         cab = [normalizar_texto(x) for x in df.columns.tolist()]
         if primeira == cab:
             df = df.iloc[1:].copy()
 
-    if col_nota:
-        df[col_nota] = df[col_nota].astype(str).str.strip()
-
-    if col_nome:
-        df[col_nome] = df[col_nome].astype(str).str.strip()
-
-    if col_data:
-        df[col_data] = pd.to_datetime(df[col_data], errors="coerce")
-
-    return df, col_nota, col_data, col_nome, header_idx
+    return df, header_idx
 
 def listar_abas(path_xlsx):
     xls = pd.ExcelFile(path_xlsx)
@@ -250,12 +263,45 @@ def validar_xlsx(path_xlsx):
         return False, "Arquivo inválido. Informe um Excel."
     return True, "OK"
 
+def montar_resultado_padrao(df):
+    resultado = pd.DataFrame()
+
+    for coluna_final in COLUNAS_PADRAO:
+        coluna_origem = localizar_coluna(df, MAPA_CAMPOS[coluna_final])
+        if coluna_origem:
+            resultado[coluna_final] = df[coluna_origem]
+        else:
+            resultado[coluna_final] = ""
+
+    # padroniza data
+    if "DATA DA BAIXA" in resultado.columns:
+        serie_data = pd.to_datetime(resultado["DATA DA BAIXA"], errors="coerce")
+        resultado["DATA DA BAIXA"] = serie_data.dt.strftime("%d/%m/%Y").fillna("")
+
+    # padroniza tudo como string para visualização/export consistente
+    for c in resultado.columns:
+        resultado[c] = resultado[c].fillna("").astype(str)
+
+    return resultado
+
 def df_para_excel_bytes(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="resultado")
     output.seek(0)
     return output.getvalue()
+
+def gerar_texto_notas(df):
+    if "NOTA AM" not in df.columns or df.empty:
+        return ""
+    notas = (
+        df["NOTA AM"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    notas = [n for n in notas if n]
+    return "\n".join(notas)
 
 # =========================================================
 # ESTADO
@@ -418,12 +464,11 @@ def app():
 
     if aba_escolhida == "TODOS":
         dfs = []
+        header_idx = "múltiplas abas"
         for aba in abas:
             try:
-                df_tmp, _, _, _, _ = carregar_df_cache(caminho, aba)
+                df_tmp, _ = carregar_df_cache(caminho, aba)
                 if len(df_tmp) > 0:
-                    df_tmp = df_tmp.copy()
-                    df_tmp["ABA_ORIGEM"] = aba
                     dfs.append(df_tmp)
             except Exception:
                 continue
@@ -432,51 +477,37 @@ def app():
             st.error("Não foi possível carregar nenhuma aba válida.")
             st.stop()
 
-        df = pd.concat(dfs, ignore_index=True)
-
-        col_nota = localizar_coluna(df, ["NOTA", "NF", "NUMERO DA NOTA", "NUMERO NOTA", "N DA NOTA", "N_NOTA"])
-        col_data = localizar_coluna(df, ["DATA", "DATA DA NOTA", "DT", "EMISSAO", "DATA EMISSAO"])
-        col_nome = localizar_coluna(df, ["ELETRICISTA", "NOME", "NOME DO ELETRICISTA", "PRESTADOR", "COLABORADOR", "NOME COMPLETO"])
-        header_idx = "múltiplas abas"
+        df_bruto = pd.concat(dfs, ignore_index=True)
     else:
         try:
-            df, col_nota, col_data, col_nome, header_idx = carregar_df_cache(caminho, aba_escolhida)
+            df_bruto, header_idx = carregar_df_cache(caminho, aba_escolhida)
         except Exception as e:
             st.error(f"Erro ao carregar a aba '{aba_escolhida}': {e}")
             st.stop()
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Linhas carregadas", len(df))
-    m2.metric("Cabeçalho detectado", str(header_idx + 1) if isinstance(header_idx, int) else str(header_idx))
-    m3.metric("Coluna Nota", col_nota if col_nota else "não identificada")
-    m4.metric("Coluna Nome", col_nome if col_nome else "não identificada")
-
-    if not col_nome:
-        st.warning("Não consegui identificar automaticamente a coluna do nome/eletricista.")
-    if not col_nota:
-        st.warning("Não consegui identificar automaticamente a coluna da nota.")
+    df = montar_resultado_padrao(df_bruto)
 
     st.divider()
 
     c1, c2 = st.columns(2)
 
     with c1:
-        busca_nome = st.text_input("Digite o nome do eletricista")
+        busca_nome = st.text_input("Digite o nome")
         busca_exata = st.checkbox("Busca exata do nome", value=False)
 
     with c2:
-        busca_nota = st.text_input("Digite o número da nota")
+        busca_nota = st.text_input("Digite a nota AM")
 
-    usar_data = st.checkbox("Filtrar por data", value=False)
+    usar_data = st.checkbox("Filtrar por data da baixa", value=False)
     busca_data = None
     if usar_data:
-        busca_data = st.date_input("Selecione a data")
+        busca_data = st.date_input("Selecione a data da baixa")
 
     st.divider()
 
     st.subheader("Busca em massa por nomes")
     lista_nomes = st.text_area(
-        "Cole vários nomes de eletricistas (1 por linha)",
+        "Cole vários nomes (1 por linha)",
         height=160,
         help="Exemplo: um nome por linha. O sistema vai buscar todos de uma vez."
     )
@@ -491,30 +522,27 @@ def app():
     resultado = df.copy()
 
     if pesquisar:
-        if busca_nome and col_nome:
-            serie_nome = resultado[col_nome].fillna("").astype(str)
-
+        if busca_nome:
+            serie_nome = resultado["NOME"].fillna("").astype(str)
             if busca_exata:
                 nome_ref = normalizar_texto(busca_nome)
                 resultado = resultado[serie_nome.map(normalizar_texto) == nome_ref]
             else:
                 resultado = resultado[safe_str_contains(serie_nome, busca_nome)]
 
-        if busca_nota and col_nota:
-            serie_nota = resultado[col_nota].fillna("").astype(str).str.strip()
+        if busca_nota:
+            serie_nota = resultado["NOTA AM"].fillna("").astype(str).str.strip()
             nota_ref = str(busca_nota).strip()
             resultado = resultado[serie_nota.str.contains(re.escape(nota_ref), na=False)]
 
-        if usar_data and busca_data and col_data:
-            serie_data = pd.to_datetime(resultado[col_data], errors="coerce")
+        if usar_data and busca_data:
+            serie_data = pd.to_datetime(resultado["DATA DA BAIXA"], format="%d/%m/%Y", errors="coerce")
             resultado = resultado[serie_data.dt.date == busca_data]
 
-        # BUSCA EM MASSA POR NOMES
-        if lista_nomes.strip() and col_nome:
+        if lista_nomes.strip():
             nomes = [linha.strip() for linha in lista_nomes.splitlines() if linha.strip()]
             nomes_normalizados = {normalizar_texto(nome) for nome in nomes}
-
-            serie_nome_norm = resultado[col_nome].fillna("").astype(str).map(normalizar_texto)
+            serie_nome_norm = resultado["NOME"].fillna("").astype(str).map(normalizar_texto)
             resultado = resultado[serie_nome_norm.isin(nomes_normalizados)]
 
     st.divider()
@@ -528,21 +556,30 @@ def app():
             with st.container():
                 st.markdown('<div class="result-box">Resultado da pesquisa carregado com sucesso.</div>', unsafe_allow_html=True)
 
-            st.dataframe(resultado, use_container_width=True, height=420)
+            # Exibe apenas os campos padrão na ordem da imagem
+            st.dataframe(resultado[COLUNAS_PADRAO], use_container_width=True, height=420)
 
-            excel_bytes = df_para_excel_bytes(resultado)
-            st.download_button(
-                "⬇️ Baixar resultado em Excel",
-                data=excel_bytes,
-                file_name="resultado_busca_cadastro.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            col_btn1, col_btn2 = st.columns(2)
+
+            with col_btn1:
+                excel_bytes = df_para_excel_bytes(resultado[COLUNAS_PADRAO])
+                st.download_button(
+                    "⬇️ Baixar resultado em Excel",
+                    data=excel_bytes,
+                    file_name="resultado_busca_cadastro.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            with col_btn2:
+                notas_texto = gerar_texto_notas(resultado[COLUNAS_PADRAO])
+                st.code(notas_texto if notas_texto else "", language=None)
+                st.caption("Copie o conteúdo acima. Ele traz as notas da coluna NOTA AM, uma por linha.")
 
     with st.expander("📄 Visualizar base completa", expanded=False):
-        st.dataframe(df, use_container_width=True, height=350)
-        st.caption("Colunas encontradas na base:")
-        st.write(list(df.columns))
+        st.dataframe(df_bruto, use_container_width=True, height=350)
+        st.caption("Colunas encontradas na base original:")
+        st.write(list(df_bruto.columns))
 
 # =========================================================
 # MAIN
