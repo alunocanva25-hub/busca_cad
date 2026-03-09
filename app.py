@@ -55,79 +55,146 @@ def normalizar_usuario(nome):
     return str(nome).strip()
 
 
-def carregar_admin_de_secrets():
-    admin = None
+def ler_admin_por_chaves_diretas():
+    """
+    Formato alternativo de secrets:
+    ADMIN_USER = "admin"
+    ADMIN_PASSWORD = "1234"
+    """
+    try:
+        admin_user = str(get_secret_or_env("ADMIN_USER", "admin")).strip()
+        admin_password = str(get_secret_or_env("ADMIN_PASSWORD", "")).strip()
+        if admin_password:
+            return {
+                normalizar_usuario(admin_user or "admin"): {
+                    "senha": admin_password,
+                    "perfil": "total"
+                }
+            }
+    except Exception:
+        pass
+    return None
 
+
+def ler_admin_por_bloco_usuarios():
+    """
+    Formato esperado:
+    [USUARIOS]
+    admin = { senha = "1234", perfil = "total" }
+    """
     try:
         if "USUARIOS" in st.secrets:
-            raw = dict(st.secrets["USUARIOS"])
-            if "admin" in raw:
-                valor = raw["admin"]
-                if isinstance(valor, dict):
-                    admin = {
-                        "senha": str(valor.get("senha", "1234")),
-                        "perfil": "total"
-                    }
-                else:
-                    admin = {
-                        "senha": str(valor),
-                        "perfil": "total"
-                    }
-    except Exception:
-        pass
+            raw = st.secrets["USUARIOS"]
 
-    try:
-        if admin is None and "USUARIOS_JSON" in st.secrets:
-            raw = json.loads(st.secrets["USUARIOS_JSON"])
-            if "admin" in raw:
-                valor = raw["admin"]
-                if isinstance(valor, dict):
-                    admin = {
-                        "senha": str(valor.get("senha", "1234")),
-                        "perfil": "total"
-                    }
-                else:
-                    admin = {
-                        "senha": str(valor),
-                        "perfil": "total"
-                    }
-    except Exception:
-        pass
+            # Caso seja dict-like
+            if hasattr(raw, "items"):
+                raw = dict(raw)
 
-    try:
-        if admin is None:
-            usuarios_json = os.getenv("USUARIOS_JSON", "").strip()
-            if usuarios_json:
-                raw = json.loads(usuarios_json)
-                if "admin" in raw:
-                    valor = raw["admin"]
-                    if isinstance(valor, dict):
-                        admin = {
-                            "senha": str(valor.get("senha", "1234")),
+            if isinstance(raw, dict) and "admin" in raw:
+                valor = raw["admin"]
+
+                if isinstance(valor, dict):
+                    senha = str(valor.get("senha", "")).strip()
+                    if senha:
+                        return {
+                            "admin": {
+                                "senha": senha,
+                                "perfil": "total"
+                            }
+                        }
+
+                # Caso venha como string direta
+                senha = str(valor).strip()
+                if senha and senha != "{}":
+                    return {
+                        "admin": {
+                            "senha": senha,
                             "perfil": "total"
                         }
-                    else:
-                        admin = {
-                            "senha": str(valor),
-                            "perfil": "total"
+                    }
+    except Exception:
+        pass
+
+    return None
+
+
+def ler_admin_por_json():
+    """
+    Formato alternativo:
+    USUARIOS_JSON = '{"admin":{"senha":"1234","perfil":"total"}}'
+    """
+    try:
+        raw_json = None
+
+        if "USUARIOS_JSON" in st.secrets:
+            raw_json = st.secrets["USUARIOS_JSON"]
+        elif os.getenv("USUARIOS_JSON", "").strip():
+            raw_json = os.getenv("USUARIOS_JSON", "").strip()
+
+        if raw_json:
+            data = json.loads(raw_json)
+            if isinstance(data, dict) and "admin" in data:
+                valor = data["admin"]
+                if isinstance(valor, dict):
+                    senha = str(valor.get("senha", "")).strip()
+                    if senha:
+                        return {
+                            "admin": {
+                                "senha": senha,
+                                "perfil": "total"
+                            }
+                        }
+                else:
+                    senha = str(valor).strip()
+                    if senha:
+                        return {
+                            "admin": {
+                                "senha": senha,
+                                "perfil": "total"
+                            }
                         }
     except Exception:
         pass
 
-    if admin is None:
-        admin = {"senha": "1234", "perfil": "total"}
+    return None
 
-    return admin
+
+def carregar_admin_de_secrets():
+    """
+    Ordem:
+    1. ADMIN_USER + ADMIN_PASSWORD
+    2. [USUARIOS].admin
+    3. USUARIOS_JSON
+    4. fallback
+    """
+    por_chaves = ler_admin_por_chaves_diretas()
+    if por_chaves:
+        return por_chaves
+
+    por_bloco = ler_admin_por_bloco_usuarios()
+    if por_bloco:
+        return por_bloco
+
+    por_json = ler_admin_por_json()
+    if por_json:
+        return por_json
+
+    return {
+        "admin": {
+            "senha": "1234",
+            "perfil": "total"
+        }
+    }
 
 
 def carregar_usuarios():
     """
     Regra:
-    1. admin vem sempre de secrets/env/fallback e SEMPRE prevalece
-    2. users.json guarda usuários criados/editados pelo app
-    3. users.json não sobrescreve o admin
+    - admin sempre vem de secrets/env/fallback
+    - users.json guarda só usuários criados pelo app
+    - users.json não sobrescreve admin
     """
-    usuarios = {"admin": carregar_admin_de_secrets()}
+    usuarios = carregar_admin_de_secrets()
 
     if USERS_FILE.exists():
         try:
@@ -137,11 +204,12 @@ def carregar_usuarios():
                     user = normalizar_usuario(user)
                     if not user or user.lower() == "admin":
                         continue
+
                     if isinstance(valor, dict):
-                        senha = str(valor.get("senha", "123"))
+                        senha = str(valor.get("senha", "123")).strip()
                         perfil = str(valor.get("perfil", "consulta")).strip().lower()
                     else:
-                        senha = str(valor)
+                        senha = str(valor).strip()
                         perfil = "consulta"
 
                     usuarios[user] = {
@@ -151,13 +219,19 @@ def carregar_usuarios():
         except Exception:
             pass
 
+    # garantia final
+    if "admin" not in usuarios:
+        usuarios["admin"] = {"senha": "1234", "perfil": "total"}
+
+    usuarios["admin"]["perfil"] = "total"
+    usuarios["admin"]["senha"] = str(usuarios["admin"].get("senha", "1234")).strip()
+
     return usuarios
 
 
 def salvar_usuarios(usuarios_dict):
     """
     Salva apenas usuários não-admin.
-    Assim o admin do secrets sempre manda.
     """
     dados_para_salvar = {}
     for user, dados in usuarios_dict.items():
@@ -165,7 +239,7 @@ def salvar_usuarios(usuarios_dict):
         if not user or user.lower() == "admin":
             continue
         dados_para_salvar[user] = {
-            "senha": str(dados.get("senha", "123")),
+            "senha": str(dados.get("senha", "123")).strip(),
             "perfil": "total" if str(dados.get("perfil", "consulta")).lower() == "total" else "consulta"
         }
 
@@ -563,8 +637,10 @@ def tela_login():
         recarregar_usuarios()
 
         usuario = normalizar_usuario(usuario)
+        senha_digitada = str(senha).strip()
+
         usuario_ok = usuario in USUARIOS
-        senha_ok = usuario_ok and str(USUARIOS[usuario]["senha"]) == str(senha)
+        senha_ok = usuario_ok and str(USUARIOS[usuario]["senha"]).strip() == senha_digitada
 
         if usuario_ok and senha_ok:
             st.session_state.logado = True
@@ -578,6 +654,7 @@ def tela_login():
                 if usuario_ok:
                     st.write("Perfil lido:", USUARIOS[usuario].get("perfil", "consulta"))
                     st.write("Fonte do admin:", "secrets/env/fallback" if usuario.lower() == "admin" else "users.json")
+                    st.write("Senha vazia no cadastro:", "sim" if not str(USUARIOS[usuario].get("senha", "")).strip() else "não")
 
     st.markdown('<div class="small-note">O usuário admin sempre obedece ao Secrets.</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -771,6 +848,20 @@ def painel_configuracoes():
             st.write("Caminho resolvido:", str(resolver_caminho_xlsx(st.session_state.xlsx_path)))
             st.write("Usar Drive:", st.session_state.usar_drive)
             st.write("Drive File ID informado:", "sim" if st.session_state.drive_file_id else "não")
+
+        with st.expander("Diagnóstico do admin", expanded=False):
+            admin_info = USUARIOS.get("admin", {})
+            st.write("Admin carregado:", "sim" if "admin" in USUARIOS else "não")
+            st.write("Perfil admin:", admin_info.get("perfil", ""))
+            st.write("Senha admin vazia:", "sim" if not str(admin_info.get("senha", "")).strip() else "não")
+            st.write("Formato detectado de secrets:", 
+                     "ADMIN_USER/ADMIN_PASSWORD"
+                     if ler_admin_por_chaves_diretas()
+                     else "[USUARIOS].admin"
+                     if ler_admin_por_bloco_usuarios()
+                     else "USUARIOS_JSON"
+                     if ler_admin_por_json()
+                     else "fallback")
 
         if pode_configurar:
             if st.button("Limpar cache", use_container_width=True):
