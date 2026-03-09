@@ -39,7 +39,8 @@ def get_secret_or_env(name, default=""):
     return os.getenv(name, default)
 
 
-DEFAULT_XLSX_PATH = get_secret_or_env("XLSX_PATH", "dados.xlsx")
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_XLSX_PATH = str(BASE_DIR / get_secret_or_env("XLSX_PATH", "BUSCAR_CAD.xlsx"))
 DEFAULT_DRIVE_FILE_ID = get_secret_or_env("DRIVE_FILE_ID", "")
 
 # =========================================================
