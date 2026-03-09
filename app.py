@@ -4,11 +4,9 @@ import re
 import json
 import unicodedata
 from pathlib import Path
-from copy import deepcopy
 
 import pandas as pd
 import streamlit as st
-from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -46,131 +44,133 @@ def get_secret_or_env(name, default=""):
     return os.getenv(name, default)
 
 
-DEFAULT_XLSX_PATH = get_secret_or_env("XLSX_PATH", "BUSCAR_CAD.xlsx")
-DEFAULT_DRIVE_FILE_ID = get_secret_or_env("DRIVE_FILE_ID", "")
+DEFAULT_XLSX_PATH = str(get_secret_or_env("XLSX_PATH", "BUSCAR_CAD.xlsx")).strip()
+DEFAULT_DRIVE_FILE_ID = str(get_secret_or_env("DRIVE_FILE_ID", "")).strip()
 
 # =========================================================
 # LOGIN / USUÁRIOS
 # =========================================================
 
-def carregar_usuarios_base():
-    """
-    Base inicial:
-    - tenta st.secrets[USUARIOS]
-    - tenta st.secrets[USUARIOS_JSON]
-    - tenta env USUARIOS_JSON
-    - fallback padrão
+def normalizar_usuario(nome):
+    return str(nome).strip()
 
-    Formato interno:
-    {
-      "admin": {"senha": "123", "perfil": "total"},
-      "usuario1": {"senha": "123", "perfil": "consulta"}
-    }
-    """
-    padrao = {
-        "admin": {"senha": "123", "perfil": "total"},
-        "usuario1": {"senha": "123", "perfil": "consulta"},
-        "usuario2": {"senha": "123", "perfil": "consulta"},
-        "usuario3": {"senha": "123", "perfil": "consulta"},
-        "usuario4": {"senha": "123", "perfil": "consulta"},
-    }
 
-    # st.secrets["USUARIOS"] pode vir como dict simples ou dict aninhado
+def carregar_admin_de_secrets():
+    admin = None
+
     try:
         if "USUARIOS" in st.secrets:
             raw = dict(st.secrets["USUARIOS"])
-            normalizado = {}
-            for user, valor in raw.items():
+            if "admin" in raw:
+                valor = raw["admin"]
                 if isinstance(valor, dict):
-                    senha = str(valor.get("senha", "123"))
-                    perfil = str(valor.get("perfil", "consulta")).strip().lower()
+                    admin = {
+                        "senha": str(valor.get("senha", "1234")),
+                        "perfil": "total"
+                    }
                 else:
-                    senha = str(valor)
-                    perfil = "consulta" if user.lower() != "admin" else "total"
-                normalizado[str(user)] = {
-                    "senha": senha,
-                    "perfil": "total" if perfil == "total" else "consulta"
-                }
-            if "admin" not in normalizado:
-                normalizado["admin"] = {"senha": "123", "perfil": "total"}
-            return normalizado
+                    admin = {
+                        "senha": str(valor),
+                        "perfil": "total"
+                    }
     except Exception:
         pass
 
     try:
-        if "USUARIOS_JSON" in st.secrets:
+        if admin is None and "USUARIOS_JSON" in st.secrets:
             raw = json.loads(st.secrets["USUARIOS_JSON"])
-            normalizado = {}
-            for user, valor in raw.items():
+            if "admin" in raw:
+                valor = raw["admin"]
                 if isinstance(valor, dict):
-                    senha = str(valor.get("senha", "123"))
-                    perfil = str(valor.get("perfil", "consulta")).strip().lower()
+                    admin = {
+                        "senha": str(valor.get("senha", "1234")),
+                        "perfil": "total"
+                    }
                 else:
-                    senha = str(valor)
-                    perfil = "consulta" if str(user).lower() != "admin" else "total"
-                normalizado[str(user)] = {
-                    "senha": senha,
-                    "perfil": "total" if perfil == "total" else "consulta"
-                }
-            if "admin" not in normalizado:
-                normalizado["admin"] = {"senha": "123", "perfil": "total"}
-            return normalizado
+                    admin = {
+                        "senha": str(valor),
+                        "perfil": "total"
+                    }
     except Exception:
         pass
 
     try:
-        usuarios_json = os.getenv("USUARIOS_JSON", "").strip()
-        if usuarios_json:
-            raw = json.loads(usuarios_json)
-            normalizado = {}
-            for user, valor in raw.items():
-                if isinstance(valor, dict):
-                    senha = str(valor.get("senha", "123"))
-                    perfil = str(valor.get("perfil", "consulta")).strip().lower()
-                else:
-                    senha = str(valor)
-                    perfil = "consulta" if str(user).lower() != "admin" else "total"
-                normalizado[str(user)] = {
-                    "senha": senha,
-                    "perfil": "total" if perfil == "total" else "consulta"
-                }
-            if "admin" not in normalizado:
-                normalizado["admin"] = {"senha": "123", "perfil": "total"}
-            return normalizado
+        if admin is None:
+            usuarios_json = os.getenv("USUARIOS_JSON", "").strip()
+            if usuarios_json:
+                raw = json.loads(usuarios_json)
+                if "admin" in raw:
+                    valor = raw["admin"]
+                    if isinstance(valor, dict):
+                        admin = {
+                            "senha": str(valor.get("senha", "1234")),
+                            "perfil": "total"
+                        }
+                    else:
+                        admin = {
+                            "senha": str(valor),
+                            "perfil": "total"
+                        }
     except Exception:
         pass
 
-    return padrao
+    if admin is None:
+        admin = {"senha": "1234", "perfil": "total"}
+
+    return admin
 
 
 def carregar_usuarios():
-    base = carregar_usuarios_base()
+    """
+    Regra:
+    1. admin vem sempre de secrets/env/fallback e SEMPRE prevalece
+    2. users.json guarda usuários criados/editados pelo app
+    3. users.json não sobrescreve o admin
+    """
+    usuarios = {"admin": carregar_admin_de_secrets()}
 
-    # users.json sobrescreve/expande a base
     if USERS_FILE.exists():
         try:
             extra = json.loads(USERS_FILE.read_text(encoding="utf-8"))
             if isinstance(extra, dict):
                 for user, valor in extra.items():
+                    user = normalizar_usuario(user)
+                    if not user or user.lower() == "admin":
+                        continue
                     if isinstance(valor, dict):
                         senha = str(valor.get("senha", "123"))
                         perfil = str(valor.get("perfil", "consulta")).strip().lower()
-                        base[str(user)] = {
-                            "senha": senha,
-                            "perfil": "total" if perfil == "total" else "consulta"
-                        }
+                    else:
+                        senha = str(valor)
+                        perfil = "consulta"
+
+                    usuarios[user] = {
+                        "senha": senha,
+                        "perfil": "total" if perfil == "total" else "consulta"
+                    }
         except Exception:
             pass
 
-    if "admin" not in base:
-        base["admin"] = {"senha": "123", "perfil": "total"}
-
-    return base
+    return usuarios
 
 
 def salvar_usuarios(usuarios_dict):
+    """
+    Salva apenas usuários não-admin.
+    Assim o admin do secrets sempre manda.
+    """
+    dados_para_salvar = {}
+    for user, dados in usuarios_dict.items():
+        user = normalizar_usuario(user)
+        if not user or user.lower() == "admin":
+            continue
+        dados_para_salvar[user] = {
+            "senha": str(dados.get("senha", "123")),
+            "perfil": "total" if str(dados.get("perfil", "consulta")).lower() == "total" else "consulta"
+        }
+
     USERS_FILE.write_text(
-        json.dumps(usuarios_dict, ensure_ascii=False, indent=2),
+        json.dumps(dados_para_salvar, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
 
@@ -300,7 +300,7 @@ def resolver_caminho_xlsx(path_xlsx):
 
 def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
     bruto = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=None, nrows=max_linhas)
-    melhor_idx = 2
+    melhor_idx = 0
     melhor_score = -1
 
     chaves_nota = ["NOTA", "NF", "NUMERO_NOTA", "N_NOTA", "NOTA_AM"]
@@ -433,7 +433,6 @@ def df_para_excel_bytes_formatado(df):
         df.to_excel(writer, index=False, sheet_name="resultado")
         ws = writer.book["resultado"]
 
-        # Estilo do cabeçalho parecido com a imagem
         fill_azul = PatternFill("solid", fgColor="9DC3E6")
         fill_verde = PatternFill("solid", fgColor="C6E0B4")
         fonte = Font(bold=True, color="000000")
@@ -443,34 +442,22 @@ def df_para_excel_bytes_formatado(df):
             top=Side(style="thin", color="808080"),
             bottom=Side(style="thin", color="808080")
         )
-
         alinhamento = Alignment(horizontal="center", vertical="center")
 
         for idx, cell in enumerate(ws[1], start=1):
             cell.font = fonte
             cell.border = borda
             cell.alignment = alinhamento
+            cell.fill = fill_verde if idx >= 8 else fill_azul
 
-            if idx >= 8:
-                cell.fill = fill_verde
-            else:
-                cell.fill = fill_azul
-
-        # Bordas nas células
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             for cell in row:
                 cell.border = borda
 
-        # Filtro automático
         ws.auto_filter.ref = ws.dimensions
-
-        # Congelar cabeçalho
         ws.freeze_panes = "A2"
-
-        # Altura da linha do cabeçalho
         ws.row_dimensions[1].height = 22
 
-        # Largura automática
         for col_idx, col_name in enumerate(df.columns, start=1):
             max_len = len(str(col_name))
             for value in df.iloc[:, col_idx - 1].astype(str).head(1000):
@@ -504,11 +491,26 @@ def usuario_e_admin():
 def perfil_usuario_logado():
     usuario = str(st.session_state.get("usuario_logado", "")).strip()
     dados = USUARIOS.get(usuario, {})
-    return str(dados.get("perfil", "consulta")).strip().lower()
+    perfil = str(dados.get("perfil", "consulta")).strip().lower()
+    return "total" if perfil == "total" else "consulta"
 
 
 def usuario_pode_configurar():
     return perfil_usuario_logado() == "total"
+
+
+def recarregar_usuarios():
+    global USUARIOS
+    USUARIOS = carregar_usuarios()
+
+
+def tentar_baixar_automaticamente_se_faltar():
+    ok, _ = validar_xlsx(st.session_state.xlsx_path)
+    if ok:
+        return
+
+    if st.session_state.usar_drive and st.session_state.drive_file_id:
+        baixar_do_drive(st.session_state.drive_file_id, st.session_state.xlsx_path)
 
 # =========================================================
 # ESTADO
@@ -527,7 +529,7 @@ if "drive_file_id" not in st.session_state:
     st.session_state.drive_file_id = DEFAULT_DRIVE_FILE_ID
 
 if "usar_drive" not in st.session_state:
-    st.session_state.usar_drive = False
+    st.session_state.usar_drive = True if DEFAULT_DRIVE_FILE_ID else False
 
 # =========================================================
 # CACHE
@@ -558,6 +560,9 @@ def tela_login():
         entrar = st.form_submit_button("Entrar", use_container_width=True)
 
     if entrar:
+        recarregar_usuarios()
+
+        usuario = normalizar_usuario(usuario)
         usuario_ok = usuario in USUARIOS
         senha_ok = usuario_ok and str(USUARIOS[usuario]["senha"]) == str(senha)
 
@@ -567,8 +572,14 @@ def tela_login():
             st.rerun()
         else:
             st.error("Usuário ou senha inválidos.")
+            with st.expander("Diagnóstico do login", expanded=False):
+                st.write("Usuário informado:", usuario)
+                st.write("Usuário existe:", "sim" if usuario_ok else "não")
+                if usuario_ok:
+                    st.write("Perfil lido:", USUARIOS[usuario].get("perfil", "consulta"))
+                    st.write("Fonte do admin:", "secrets/env/fallback" if usuario.lower() == "admin" else "users.json")
 
-    st.markdown('<div class="small-note">Agora o login aceita Enter no campo senha.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-note">O usuário admin sempre obedece ao Secrets.</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -593,12 +604,14 @@ def painel_usuarios_admin():
                 criar_usuario = st.form_submit_button("Criar usuário", use_container_width=True)
 
             if criar_usuario:
-                u = novo_usuario.strip()
-                s = nova_senha.strip()
-                p = novo_perfil.strip().lower()
+                u = normalizar_usuario(novo_usuario)
+                s = str(nova_senha).strip()
+                p = str(novo_perfil).strip().lower()
 
                 if not u:
                     st.error("Informe o nome do usuário.")
+                elif u.lower() == "admin":
+                    st.error("O usuário admin é controlado pelo Secrets e não pode ser recriado aqui.")
                 elif not re.match(r"^[A-Za-z0-9_.-]+$", u):
                     st.error("Usuário inválido. Use apenas letras, números, _, . ou -")
                 elif not s:
@@ -609,6 +622,7 @@ def painel_usuarios_admin():
                     USUARIOS[u] = {"senha": s, "perfil": "total" if p == "total" else "consulta"}
                     try:
                         salvar_usuarios(USUARIOS)
+                        recarregar_usuarios()
                         st.success(f"Usuário '{u}' criado com sucesso.")
                         st.rerun()
                     except Exception as e:
@@ -625,8 +639,8 @@ def painel_usuarios_admin():
                 st.dataframe(pd.DataFrame(usuarios_exibicao), use_container_width=True, height=220)
 
             st.caption("Alteração rápida de perfil/senha")
-            usuarios_editaveis = [u for u in USUARIOS.keys()]
 
+            usuarios_editaveis = list(USUARIOS.keys())
             if usuarios_editaveis:
                 with st.form("form_editar_usuario", clear_on_submit=True):
                     usuario_alvo = st.selectbox("Selecionar usuário", usuarios_editaveis)
@@ -638,16 +652,15 @@ def painel_usuarios_admin():
                     try:
                         if usuario_alvo not in USUARIOS:
                             st.error("Usuário não encontrado.")
+                        elif usuario_alvo.lower() == "admin":
+                            st.error("O admin deve ser alterado pelo Secrets do Streamlit Cloud.")
                         else:
                             if nova_senha_edit.strip():
                                 USUARIOS[usuario_alvo]["senha"] = nova_senha_edit.strip()
                             USUARIOS[usuario_alvo]["perfil"] = "total" if novo_perfil_edit == "total" else "consulta"
 
-                            # garante admin como total
-                            if usuario_alvo.lower() == "admin":
-                                USUARIOS[usuario_alvo]["perfil"] = "total"
-
                             salvar_usuarios(USUARIOS)
+                            recarregar_usuarios()
                             st.success("Usuário atualizado com sucesso.")
                             st.rerun()
                     except Exception as e:
@@ -662,6 +675,7 @@ def painel_usuarios_admin():
                             try:
                                 USUARIOS.pop(usuario_excluir, None)
                                 salvar_usuarios(USUARIOS)
+                                recarregar_usuarios()
                                 st.success(f"Usuário '{usuario_excluir}' removido.")
                                 st.rerun()
                             except Exception as e:
@@ -718,7 +732,7 @@ def painel_configuracoes():
 
                 with col_b:
                     if st.button("Restaurar padrão", use_container_width=True):
-                        st.session_state.usar_drive = False
+                        st.session_state.usar_drive = True if DEFAULT_DRIVE_FILE_ID else False
                         st.session_state.xlsx_path = DEFAULT_XLSX_PATH
                         st.session_state.drive_file_id = DEFAULT_DRIVE_FILE_ID
                         st.success("Padrão restaurado.")
@@ -739,6 +753,11 @@ def painel_configuracoes():
                 st.checkbox("Baixar do Google Drive", value=st.session_state.usar_drive, disabled=True)
                 st.warning("Configurações bloqueadas para este usuário.")
 
+        try:
+            tentar_baixar_automaticamente_se_faltar()
+        except Exception:
+            pass
+
         ok, msg = validar_xlsx(st.session_state.xlsx_path)
         if ok:
             st.success(f"Arquivo ativo: {msg}")
@@ -750,6 +769,8 @@ def painel_configuracoes():
             st.write("Pasta do app:", str(BASE_DIR))
             st.write("Caminho configurado:", st.session_state.xlsx_path)
             st.write("Caminho resolvido:", str(resolver_caminho_xlsx(st.session_state.xlsx_path)))
+            st.write("Usar Drive:", st.session_state.usar_drive)
+            st.write("Drive File ID informado:", "sim" if st.session_state.drive_file_id else "não")
 
         if pode_configurar:
             if st.button("Limpar cache", use_container_width=True):
