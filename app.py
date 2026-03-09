@@ -952,10 +952,16 @@ def app():
     with c2:
         busca_nota = st.text_input("Digite a nota AM")
 
-    usar_data = st.checkbox("Filtrar por data da baixa", value=False)
-    busca_data = None
+    usar_data = st.checkbox("Filtrar por período da data da baixa", value=False)
+    data_inicial = None
+    data_final = None
+
     if usar_data:
-        busca_data = st.date_input("Selecione a data da baixa")
+        d1, d2 = st.columns(2)
+        with d1:
+            data_inicial = st.date_input("Data inicial")
+        with d2:
+            data_final = st.date_input("Data final")
 
     st.divider()
 
@@ -989,9 +995,12 @@ def app():
             nota_ref = str(busca_nota).strip()
             resultado = resultado[serie_nota.str.contains(re.escape(nota_ref), na=False)]
 
-        if usar_data and busca_data:
+        if usar_data and data_inicial and data_final:
             serie_data = pd.to_datetime(resultado["DATA DA BAIXA"], format="%d/%m/%Y", errors="coerce")
-            resultado = resultado[serie_data.dt.date == busca_data]
+            resultado = resultado[
+                (serie_data.dt.date >= data_inicial) &
+                (serie_data.dt.date <= data_final)
+            ]
 
         if lista_nomes.strip():
             nomes = [linha.strip() for linha in lista_nomes.splitlines() if linha.strip()]
