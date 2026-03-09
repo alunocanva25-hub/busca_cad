@@ -18,6 +18,8 @@ st.set_page_config(
     layout="wide"
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -47,13 +49,6 @@ DEFAULT_DRIVE_FILE_ID = get_secret_or_env("DRIVE_FILE_ID", "")
 # =========================================================
 
 def carregar_usuarios():
-    """
-    Prioridade:
-    1) st.secrets["USUARIOS"] como dict
-    2) st.secrets["USUARIOS_JSON"] como JSON string
-    3) variável de ambiente USUARIOS_JSON
-    4) fallback padrão
-    """
     padrao = {
         "admin": "123",
         "usuario1": "123",
@@ -195,6 +190,7 @@ def normalizar_texto(valor):
     valor = re.sub(r"\s+", " ", valor)
     return valor.upper().strip()
 
+
 def slug_coluna(valor):
     txt = normalizar_texto(valor)
     txt = txt.replace("Ç", "C")
@@ -202,10 +198,21 @@ def slug_coluna(valor):
     txt = re.sub(r"_+", "_", txt).strip("_")
     return txt
 
+
 def safe_str_contains(series, termo):
     termo_norm = normalizar_texto(termo)
     serie_norm = series.fillna("").astype(str).map(normalizar_texto)
     return serie_norm.str.contains(re.escape(termo_norm), na=False)
+
+
+def resolver_caminho_xlsx(path_xlsx):
+    p = Path(str(path_xlsx).strip())
+
+    if not p.is_absolute():
+        p = BASE_DIR / p
+
+    return p.resolve()
+
 
 def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
     bruto = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=None, nrows=max_linhas)
@@ -234,6 +241,7 @@ def detectar_cabecalho(path_xlsx, sheet_name, max_linhas=12):
 
     return melhor_idx
 
+
 def localizar_coluna(df, candidatos):
     mapa = {slug_coluna(c): c for c in df.columns}
 
@@ -250,6 +258,7 @@ def localizar_coluna(df, candidatos):
 
     return None
 
+
 def limpar_dataframe(df):
     df = df.dropna(axis=1, how="all").copy()
 
@@ -264,9 +273,11 @@ def limpar_dataframe(df):
     df = df.dropna(axis=0, how="all").copy()
     return df
 
+
 def preparar_dataframe(path_xlsx, sheet_name):
-    header_idx = detectar_cabecalho(path_xlsx, sheet_name)
-    df = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=header_idx)
+    caminho_real = resolver_caminho_xlsx(path_xlsx)
+    header_idx = detectar_cabecalho(caminho_real, sheet_name)
+    df = pd.read_excel(caminho_real, sheet_name=sheet_name, header=header_idx)
     df = limpar_dataframe(df)
 
     if len(df) > 0:
@@ -277,9 +288,12 @@ def preparar_dataframe(path_xlsx, sheet_name):
 
     return df, header_idx
 
+
 def listar_abas(path_xlsx):
-    xls = pd.ExcelFile(path_xlsx)
+    caminho_real = resolver_caminho_xlsx(path_xlsx)
+    xls = pd.ExcelFile(caminho_real)
     return xls.sheet_names
+
 
 def baixar_do_drive(file_id, destino):
     if not file_id:
@@ -287,20 +301,28 @@ def baixar_do_drive(file_id, destino):
     if gdown is None:
         return False, "Biblioteca gdown não instalada. Adicione gdown no requirements.txt."
 
+    destino_real = resolver_caminho_xlsx(destino)
+    destino_real.parent.mkdir(parents=True, exist_ok=True)
+
     url = f"https://drive.google.com/uc?id={file_id}"
     try:
-        gdown.download(url, destino, quiet=False)
-        return True, f"Arquivo baixado com sucesso para: {destino}"
+        gdown.download(url, str(destino_real), quiet=False)
+        return True, f"Arquivo baixado com sucesso para: {destino_real}"
     except Exception as e:
         return False, f"Erro ao baixar do Drive: {e}"
 
+
 def validar_xlsx(path_xlsx):
-    p = Path(path_xlsx)
+    p = resolver_caminho_xlsx(path_xlsx)
+
     if not p.exists():
-        return False, "Arquivo não encontrado."
+        return False, f"Arquivo não encontrado: {p}"
+
     if p.suffix.lower() not in [".xlsx", ".xlsm", ".xls"]:
-        return False, "Arquivo inválido. Informe um Excel."
-    return True, "OK"
+        return False, f"Arquivo inválido: {p}"
+
+    return True, str(p)
+
 
 def montar_resultado_padrao(df):
     resultado = pd.DataFrame()
@@ -321,12 +343,14 @@ def montar_resultado_padrao(df):
 
     return resultado
 
+
 def df_para_excel_bytes(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="resultado")
     output.seek(0)
     return output.getvalue()
+
 
 def gerar_texto_notas(df):
     if "NOTA AM" not in df.columns or df.empty:
@@ -335,11 +359,13 @@ def gerar_texto_notas(df):
     notas = [n for n in notas if n]
     return "\n".join(notas)
 
+
 def desempacotar_carregamento(retorno):
     if isinstance(retorno, tuple):
         if len(retorno) >= 2:
             return retorno[0], retorno[1]
     raise ValueError("Retorno inesperado ao carregar a planilha.")
+
 
 def usuario_e_admin():
     return str(st.session_state.get("usuario_logado", "")).strip().lower() == "admin"
@@ -370,6 +396,7 @@ if "usar_drive" not in st.session_state:
 @st.cache_data(show_spinner=False)
 def carregar_abas_cache(path_xlsx):
     return listar_abas(path_xlsx)
+
 
 @st.cache_data(show_spinner=False)
 def carregar_df_cache(path_xlsx, sheet_name):
@@ -432,7 +459,7 @@ def painel_configuracoes():
                 xlsx_path = st.text_input(
                     "Caminho do XLSX",
                     value=st.session_state.xlsx_path,
-                    help="Deixe padrão se quiser usar o mesmo arquivo local do app."
+                    help="Ex.: dados.xlsx ou subpasta/dados.xlsx"
                 )
 
                 drive_file_id = st.text_input(
@@ -488,10 +515,15 @@ def painel_configuracoes():
 
         ok, msg = validar_xlsx(st.session_state.xlsx_path)
         if ok:
-            st.success(f"Arquivo ativo: {st.session_state.xlsx_path}")
+            st.success(f"Arquivo ativo: {msg}")
         else:
-            st.warning(f"Arquivo ativo: {st.session_state.xlsx_path}")
+            st.warning("Arquivo ativo não encontrado.")
             st.caption(msg)
+
+        with st.expander("Diagnóstico do caminho", expanded=False):
+            st.write("Pasta do app:", str(BASE_DIR))
+            st.write("Caminho configurado:", st.session_state.xlsx_path)
+            st.write("Caminho resolvido:", str(resolver_caminho_xlsx(st.session_state.xlsx_path)))
 
         if admin:
             if st.button("Limpar cache", use_container_width=True):
@@ -519,8 +551,9 @@ def app():
     ok, msg = validar_xlsx(caminho)
     if not ok:
         st.error(f"Não foi possível abrir o XLSX. Motivo: {msg}")
-        st.info("No Streamlit Cloud, use o painel lateral para informar o caminho padrão ou baixar do Google Drive.")
         st.stop()
+
+    caminho = msg
 
     try:
         abas = carregar_abas_cache(caminho)
