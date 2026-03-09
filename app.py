@@ -336,14 +336,13 @@ def gerar_texto_notas(df):
     return "\n".join(notas)
 
 def desempacotar_carregamento(retorno):
-    """
-    Compatível com versões antigas e novas da função cacheada.
-    Aceita retorno com 2 ou mais posições.
-    """
     if isinstance(retorno, tuple):
         if len(retorno) >= 2:
             return retorno[0], retorno[1]
     raise ValueError("Retorno inesperado ao carregar a planilha.")
+
+def usuario_e_admin():
+    return str(st.session_state.get("usuario_logado", "")).strip().lower() == "admin"
 
 # =========================================================
 # ESTADO
@@ -411,55 +410,81 @@ def tela_login():
 # =========================================================
 
 def painel_configuracoes():
+    admin = usuario_e_admin()
+
     with st.sidebar:
         st.markdown("## ⚙️ Configurações")
         st.write(f"Usuário logado: **{st.session_state.usuario_logado}**")
 
+        if admin:
+            st.success("Perfil: administrador")
+        else:
+            st.info("Perfil: consulta")
+            st.caption("Somente o usuário admin pode alterar as configurações.")
+
         with st.expander("Arquivo XLSX", expanded=False):
-            usar_drive = st.checkbox(
-                "Baixar do Google Drive",
-                value=st.session_state.usar_drive
-            )
+            if admin:
+                usar_drive = st.checkbox(
+                    "Baixar do Google Drive",
+                    value=st.session_state.usar_drive
+                )
 
-            xlsx_path = st.text_input(
-                "Caminho do XLSX",
-                value=st.session_state.xlsx_path,
-                help="Deixe padrão se quiser usar o mesmo arquivo local do app."
-            )
+                xlsx_path = st.text_input(
+                    "Caminho do XLSX",
+                    value=st.session_state.xlsx_path,
+                    help="Deixe padrão se quiser usar o mesmo arquivo local do app."
+                )
 
-            drive_file_id = st.text_input(
-                "Drive File ID",
-                value=st.session_state.drive_file_id,
-                help="Use se quiser baixar a planilha direto do Google Drive."
-            )
+                drive_file_id = st.text_input(
+                    "Drive File ID",
+                    value=st.session_state.drive_file_id,
+                    help="Use se quiser baixar a planilha direto do Google Drive."
+                )
 
-            col_a, col_b = st.columns(2)
+                col_a, col_b = st.columns(2)
 
-            with col_a:
-                if st.button("Salvar config", use_container_width=True):
-                    st.session_state.usar_drive = usar_drive
-                    st.session_state.xlsx_path = xlsx_path.strip() or DEFAULT_XLSX_PATH
-                    st.session_state.drive_file_id = drive_file_id.strip()
-                    st.success("Configurações salvas.")
-                    st.rerun()
+                with col_a:
+                    if st.button("Salvar config", use_container_width=True):
+                        st.session_state.usar_drive = usar_drive
+                        st.session_state.xlsx_path = xlsx_path.strip() or DEFAULT_XLSX_PATH
+                        st.session_state.drive_file_id = drive_file_id.strip()
+                        st.success("Configurações salvas.")
+                        st.rerun()
 
-            with col_b:
-                if st.button("Restaurar padrão", use_container_width=True):
-                    st.session_state.usar_drive = False
-                    st.session_state.xlsx_path = DEFAULT_XLSX_PATH
-                    st.session_state.drive_file_id = DEFAULT_DRIVE_FILE_ID
-                    st.success("Padrão restaurado.")
-                    st.rerun()
+                with col_b:
+                    if st.button("Restaurar padrão", use_container_width=True):
+                        st.session_state.usar_drive = False
+                        st.session_state.xlsx_path = DEFAULT_XLSX_PATH
+                        st.session_state.drive_file_id = DEFAULT_DRIVE_FILE_ID
+                        st.success("Padrão restaurado.")
+                        st.rerun()
 
-            if st.button("Baixar/atualizar do Drive", use_container_width=True):
-                destino = st.session_state.xlsx_path
-                ok, msg = baixar_do_drive(st.session_state.drive_file_id, destino)
-                if ok:
-                    carregar_abas_cache.clear()
-                    carregar_df_cache.clear()
-                    st.success(msg)
-                else:
-                    st.error(msg)
+                if st.button("Baixar/atualizar do Drive", use_container_width=True):
+                    destino = st.session_state.xlsx_path
+                    ok, msg = baixar_do_drive(st.session_state.drive_file_id, destino)
+                    if ok:
+                        carregar_abas_cache.clear()
+                        carregar_df_cache.clear()
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+            else:
+                st.text_input(
+                    "Caminho do XLSX",
+                    value=st.session_state.xlsx_path,
+                    disabled=True
+                )
+                st.text_input(
+                    "Drive File ID",
+                    value=st.session_state.drive_file_id,
+                    disabled=True
+                )
+                st.checkbox(
+                    "Baixar do Google Drive",
+                    value=st.session_state.usar_drive,
+                    disabled=True
+                )
+                st.warning("Configurações bloqueadas para este usuário.")
 
         ok, msg = validar_xlsx(st.session_state.xlsx_path)
         if ok:
@@ -468,10 +493,13 @@ def painel_configuracoes():
             st.warning(f"Arquivo ativo: {st.session_state.xlsx_path}")
             st.caption(msg)
 
-        if st.button("Limpar cache", use_container_width=True):
-            carregar_abas_cache.clear()
-            carregar_df_cache.clear()
-            st.success("Cache limpo. Recarregue a busca.")
+        if admin:
+            if st.button("Limpar cache", use_container_width=True):
+                carregar_abas_cache.clear()
+                carregar_df_cache.clear()
+                st.success("Cache limpo. Recarregue a busca.")
+        else:
+            st.button("Limpar cache", use_container_width=True, disabled=True)
 
         if st.button("Sair", use_container_width=True):
             st.session_state.logado = False
