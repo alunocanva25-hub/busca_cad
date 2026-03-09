@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import json
 import unicodedata
 from pathlib import Path
 
@@ -41,13 +42,51 @@ def get_secret_or_env(name, default=""):
 DEFAULT_XLSX_PATH = get_secret_or_env("XLSX_PATH", "dados.xlsx")
 DEFAULT_DRIVE_FILE_ID = get_secret_or_env("DRIVE_FILE_ID", "")
 
-USUARIOS = {
-    "admin": "123",
-    "usuario1": "123",
-    "usuario2": "123",
-    "usuario3": "123",
-    "usuario4": "123",
-}
+# =========================================================
+# LOGIN / USUÁRIOS
+# =========================================================
+
+def carregar_usuarios():
+    """
+    Prioridade:
+    1) st.secrets["USUARIOS"] como dict
+    2) st.secrets["USUARIOS_JSON"] como JSON string
+    3) variável de ambiente USUARIOS_JSON
+    4) fallback padrão
+    """
+    padrao = {
+        "admin": "123",
+        "usuario1": "123",
+        "usuario2": "123",
+        "usuario3": "123",
+        "usuario4": "123",
+    }
+
+    try:
+        if "USUARIOS" in st.secrets:
+            usuarios_secret = st.secrets["USUARIOS"]
+            if isinstance(usuarios_secret, dict):
+                return dict(usuarios_secret)
+    except Exception:
+        pass
+
+    try:
+        if "USUARIOS_JSON" in st.secrets:
+            return json.loads(st.secrets["USUARIOS_JSON"])
+    except Exception:
+        pass
+
+    try:
+        usuarios_json = os.getenv("USUARIOS_JSON", "")
+        if usuarios_json.strip():
+            return json.loads(usuarios_json)
+    except Exception:
+        pass
+
+    return padrao
+
+
+USUARIOS = carregar_usuarios()
 
 # =========================================================
 # CSS
@@ -273,12 +312,10 @@ def montar_resultado_padrao(df):
         else:
             resultado[coluna_final] = ""
 
-    # padroniza data
     if "DATA DA BAIXA" in resultado.columns:
         serie_data = pd.to_datetime(resultado["DATA DA BAIXA"], errors="coerce")
         resultado["DATA DA BAIXA"] = serie_data.dt.strftime("%d/%m/%Y").fillna("")
 
-    # padroniza tudo como string para visualização/export consistente
     for c in resultado.columns:
         resultado[c] = resultado[c].fillna("").astype(str)
 
@@ -294,14 +331,19 @@ def df_para_excel_bytes(df):
 def gerar_texto_notas(df):
     if "NOTA AM" not in df.columns or df.empty:
         return ""
-    notas = (
-        df["NOTA AM"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
+    notas = df["NOTA AM"].fillna("").astype(str).str.strip()
     notas = [n for n in notas if n]
     return "\n".join(notas)
+
+def desempacotar_carregamento(retorno):
+    """
+    Compatível com versões antigas e novas da função cacheada.
+    Aceita retorno com 2 ou mais posições.
+    """
+    if isinstance(retorno, tuple):
+        if len(retorno) >= 2:
+            return retorno[0], retorno[1]
+    raise ValueError("Retorno inesperado ao carregar a planilha.")
 
 # =========================================================
 # ESTADO
@@ -344,18 +386,23 @@ def tela_login():
     st.markdown('<div class="login-title">🔐 Buscar Cadastro</div>', unsafe_allow_html=True)
     st.markdown('<div class="login-subtitle">Entre com seu usuário e senha para acessar o sistema.</div>', unsafe_allow_html=True)
 
-    usuario = st.text_input("Usuário", key="login_usuario")
-    senha = st.text_input("Senha", type="password", key="login_senha")
+    with st.form("form_login", clear_on_submit=False):
+        usuario = st.text_input("Usuário", key="login_usuario")
+        senha = st.text_input("Senha", type="password", key="login_senha")
+        entrar = st.form_submit_button("Entrar", use_container_width=True)
 
-    if st.button("Entrar", use_container_width=True):
-        if usuario in USUARIOS and USUARIOS[usuario] == senha:
+    if entrar:
+        usuario_ok = usuario in USUARIOS
+        senha_ok = usuario_ok and str(USUARIOS[usuario]) == str(senha)
+
+        if usuario_ok and senha_ok:
             st.session_state.logado = True
             st.session_state.usuario_logado = usuario
             st.rerun()
         else:
             st.error("Usuário ou senha inválidos.")
 
-    st.markdown('<div class="small-note">Acesso inicial do sistema</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-note">Agora o login aceita Enter no campo senha.</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -421,6 +468,11 @@ def painel_configuracoes():
             st.warning(f"Arquivo ativo: {st.session_state.xlsx_path}")
             st.caption(msg)
 
+        if st.button("Limpar cache", use_container_width=True):
+            carregar_abas_cache.clear()
+            carregar_df_cache.clear()
+            st.success("Cache limpo. Recarregue a busca.")
+
         if st.button("Sair", use_container_width=True):
             st.session_state.logado = False
             st.session_state.usuario_logado = ""
@@ -467,7 +519,8 @@ def app():
         header_idx = "múltiplas abas"
         for aba in abas:
             try:
-                df_tmp, _ = carregar_df_cache(caminho, aba)
+                retorno = carregar_df_cache(caminho, aba)
+                df_tmp, _ = desempacotar_carregamento(retorno)
                 if len(df_tmp) > 0:
                     dfs.append(df_tmp)
             except Exception:
@@ -480,9 +533,11 @@ def app():
         df_bruto = pd.concat(dfs, ignore_index=True)
     else:
         try:
-            df_bruto, header_idx = carregar_df_cache(caminho, aba_escolhida)
+            retorno = carregar_df_cache(caminho, aba_escolhida)
+            df_bruto, header_idx = desempacotar_carregamento(retorno)
         except Exception as e:
             st.error(f"Erro ao carregar a aba '{aba_escolhida}': {e}")
+            st.info("Se você acabou de trocar a versão do app, clique em 'Limpar cache' na lateral e tente novamente.")
             st.stop()
 
     df = montar_resultado_padrao(df_bruto)
@@ -556,7 +611,6 @@ def app():
             with st.container():
                 st.markdown('<div class="result-box">Resultado da pesquisa carregado com sucesso.</div>', unsafe_allow_html=True)
 
-            # Exibe apenas os campos padrão na ordem da imagem
             st.dataframe(resultado[COLUNAS_PADRAO], use_container_width=True, height=420)
 
             col_btn1, col_btn2 = st.columns(2)
